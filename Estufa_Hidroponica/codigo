@@ -1,0 +1,88 @@
+
+#include "DHT.h"
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define ONE_WIRE_BUS 6 //Sensor de temperatura da água
+OneWire oneWire(ONE_WIRE_BUS);        
+DallasTemperature sensors(&oneWire);
+DeviceAddress sensorAgua;
+
+#define DHTPIN 5 // DHT11
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+int pinLDR = A0;
+int pinLed = 4;
+int pinBomba = 2;
+int pinVent = 3;
+
+const unsigned long intervaloIrrigacao = 600000; // 10 minutos
+unsigned long ultimoTempoIrrigacao = 0;
+
+const unsigned long intervaloControle = 1000; // intervalo para controle de sensores
+unsigned long ultimoTempoControle = 0;
+
+bool ligado = false;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  sensors.begin();
+
+  if (!sensors.getAddress(sensorAgua, 0)){
+     Serial.println("Sensor de temperatura da água não encontrado!");
+  } 
+
+  pinMode(pinLDR, INPUT);
+  pinMode(pinVent, OUTPUT);
+  pinMode(pinLed, OUTPUT);
+  pinMode(pinBomba, OUTPUT);
+
+  digitalWrite(pinBomba, LOW);
+  digitalWrite(pinLed, LOW);
+  digitalWrite(pinVent, LOW);
+}
+
+void loop() {
+  unsigned long agora = millis();
+
+  // Controle da iluminação e ventilação com base no tempo
+  if (agora - ultimoTempoControle >= intervaloControle) {
+    ultimoTempoControle = agora;
+
+    // Sistema de Iluminação
+    int ilumi = map(analogRead(pinLDR), 0, 1023, 0, 100);
+    digitalWrite(pinLed, ilumi > 30 ? HIGH : LOW);
+
+    // Sistema de ventilação
+    float tmpAr = dht.readTemperature();
+    sensors.requestTemperatures();
+    float tempAgua = sensors.getTempC(sensorAgua);
+
+      // Log em formato JSON
+      Serial.print("{");
+      Serial.print(""temperatura_ar":"); Serial.print(tmpAr); Serial.print(",");
+      Serial.print(""temperatura_agua":"); Serial.print(tempAgua); Serial.print(",");
+      Serial.print(""luminosidade":"); Serial.print(ilumi); Serial.print(",");
+      Serial.print(""ventilador":"); Serial.print(digitalRead(pinVent)); Serial.print(",");
+      Serial.print(""led":"); Serial.print(digitalRead(pinLed)); Serial.print(",");
+      Serial.print(""bomba":"); Serial.print(digitalRead(pinBomba));
+      Serial.println("}");
+    } 
+  }
+
+  // Controle de irrigação de 10 em 10min
+  if (agora - ultimoTempoIrrigacao >= intervaloIrrigacao) {
+    ligado = !ligado;
+    digitalWrite(pinBomba, ligado ? HIGH : LOW);
+    ultimoTempoIrrigacao = agora;
+  }
+
+    json_log_path = "/mnt/data/ProjetoBolsa_ComLogJSON2.ino"
+  with open(json_log_path, "w", encoding="utf-8") as f:
+      f.write(codigo_refatorado_com_json)
+
+  json_log_path
+}

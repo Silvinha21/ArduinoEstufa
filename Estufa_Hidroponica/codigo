@@ -1,9 +1,8 @@
-
 #include "DHT.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define ONE_WIRE_BUS 6 //Sensor de temperatura da água
+#define ONE_WIRE_BUS 6 // Sensor de temperatura da água
 OneWire oneWire(ONE_WIRE_BUS);        
 DallasTemperature sensors(&oneWire);
 DeviceAddress sensorAgua;
@@ -21,7 +20,7 @@ int pinVent = 3;
 const unsigned long intervaloIrrigacao = 600000; // 10 minutos
 unsigned long ultimoTempoIrrigacao = 0;
 
-const unsigned long intervaloControle = 1000; // intervalo para controle de sensores
+const unsigned long intervaloControle = 1000; // 1 segundo
 unsigned long ultimoTempoControle = 0;
 
 bool ligado = false;
@@ -48,41 +47,37 @@ void setup() {
 void loop() {
   unsigned long agora = millis();
 
-  // Controle da iluminação e ventilação com base no tempo
+  // Controle de sensores (iluminação, ventilação)
   if (agora - ultimoTempoControle >= intervaloControle) {
     ultimoTempoControle = agora;
 
-    // Sistema de Iluminação
+    // Leitura da luminosidade
     int ilumi = map(analogRead(pinLDR), 0, 1023, 0, 100);
     digitalWrite(pinLed, ilumi > 30 ? HIGH : LOW);
 
-    // Sistema de ventilação
+    // Leitura da temperatura do ar e da água
     float tmpAr = dht.readTemperature();
     sensors.requestTemperatures();
     float tempAgua = sensors.getTempC(sensorAgua);
 
-      // Log em formato JSON
-      Serial.print("{");
-      Serial.print(""temperatura_ar":"); Serial.print(tmpAr); Serial.print(",");
-      Serial.print(""temperatura_agua":"); Serial.print(tempAgua); Serial.print(",");
-      Serial.print(""luminosidade":"); Serial.print(ilumi); Serial.print(",");
-      Serial.print(""ventilador":"); Serial.print(digitalRead(pinVent)); Serial.print(",");
-      Serial.print(""led":"); Serial.print(digitalRead(pinLed)); Serial.print(",");
-      Serial.print(""bomba":"); Serial.print(digitalRead(pinBomba));
-      Serial.println("}");
-    } 
+    // Controle do ventilador com base na temperatura do ar
+    digitalWrite(pinVent, tmpAr > 28 ? HIGH : LOW); // Exemplo: ligar se >28ºC
+
+    // Log no formato JSON (para monitoramento serial)
+    Serial.print("{");
+    Serial.print("\"temperatura_ar\":"); Serial.print(tmpAr); Serial.print(",");
+    Serial.print("\"temperatura_agua\":"); Serial.print(tempAgua); Serial.print(",");
+    Serial.print("\"luminosidade\":"); Serial.print(ilumi); Serial.print(",");
+    Serial.print("\"ventilador\":"); Serial.print(digitalRead(pinVent)); Serial.print(",");
+    Serial.print("\"led\":"); Serial.print(digitalRead(pinLed)); Serial.print(",");
+    Serial.print("\"bomba\":"); Serial.print(digitalRead(pinBomba));
+    Serial.println("}");
   }
 
-  // Controle de irrigação de 10 em 10min
+  // Controle da bomba de irrigação a cada 10 minutos
   if (agora - ultimoTempoIrrigacao >= intervaloIrrigacao) {
     ligado = !ligado;
     digitalWrite(pinBomba, ligado ? HIGH : LOW);
     ultimoTempoIrrigacao = agora;
   }
-
-    json_log_path = "/mnt/data/ProjetoBolsa_ComLogJSON2.ino"
-  with open(json_log_path, "w", encoding="utf-8") as f:
-      f.write(codigo_refatorado_com_json)
-
-  json_log_path
 }

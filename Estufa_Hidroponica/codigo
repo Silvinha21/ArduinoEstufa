@@ -1,83 +1,113 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
 #include "DHT.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define ONE_WIRE_BUS 6 // Sensor de temperatura da água
-OneWire oneWire(ONE_WIRE_BUS);        
+// Pinos e Sensores
+#define DHTPIN D5
+#define DHTTYPE DHT11
+#define ONE_WIRE_BUS D6
+#define LDR_PIN A0
+#define LED_PIN D1
+#define BOMBA_PIN D2
+#define VENT_PIN D3
+
+DHT dht(DHTPIN, DHTTYPE);
+OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress sensorAgua;
 
-#define DHTPIN 5 // DHT11
-#define DHTTYPE DHT11
+// Bagui do WIFI
+const char* ssid = "SUA_REDE_WIFI";
+const char* password = "SUA_SENHA";
 
-DHT dht(DHTPIN, DHTTYPE);
-
-int pinLDR = A0;
-int pinLed = 4;
-int pinBomba = 2;
-int pinVent = 3;
-
-const unsigned long intervaloIrrigacao = 600000; // 10 minutos
-unsigned long ultimoTempoIrrigacao = 0;
-
-const unsigned long intervaloControle = 1000; // 1 segundo
-unsigned long ultimoTempoControle = 0;
-
-bool ligado = false;
+// Intervalo
+unsigned long ultimoEnvio = 0;
+const unsigned long intervalo = 10000; // 10s
 
 void setup() {
   Serial.begin(9600);
   dht.begin();
   sensors.begin();
+  WiFi.begin(ssid, password);
 
-  if (!sensors.getAddress(sensorAgua, 0)){
-     Serial.println("Sensor de temperatura da água não encontrado!");
-  } 
+  pinMode(LDR_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BOMBA_PIN, OUTPUT);
+  pinMode(VENT_PIN, OUTPUT);
 
-  pinMode(pinLDR, INPUT);
-  pinMode(pinVent, OUTPUT);
-  pinMode(pinLed, OUTPUT);
-  pinMode(pinBomba, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BOMBA_PIN, LOW);
+  digitalWrite(VENT_PIN, LOW);
 
-  digitalWrite(pinBomba, LOW);
-  digitalWrite(pinLed, LOW);
-  digitalWrite(pinVent, LOW);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("Wi-Fi conectado!");
+  if (!sensors.getAddress(sensorAgua, 0)) {
+    Serial.println("Sensor de temperatura da água não encontrado!");
+  }
 }
 
 void loop() {
   unsigned long agora = millis();
+  if (agora - ultimoEnvio >= intervalo) {
+    ultimoEnvio = agora;
 
-  // Controle de sensores (iluminação, ventilação)
-  if (agora - ultimoTempoControle >= intervaloControle) {
-    ultimoTempoControle = agora;
-
-    // Leitura da luminosidade
-    int ilumi = map(analogRead(pinLDR), 0, 1023, 0, 100);
-    digitalWrite(pinLed, ilumi > 30 ? HIGH : LOW);
-
-    // Leitura da temperatura do ar e da água
-    float tmpAr = dht.readTemperature();
+    float tempAr = dht.readTemperature();
+    float umidAr = dht.readHumidity();
     sensors.requestTemperatures();
     float tempAgua = sensors.getTempC(sensorAgua);
+    int ilumi = map(analogRead(LDR_PIN), 0, 1023, 0, 100);
 
-    // Controle do ventilador com base na temperatura do ar
-    digitalWrite(pinVent, tmpAr > 28 ? HIGH : LOW); // Exemplo: ligar se >28ºC
+    // Simulações (pH, nutrientes) — Depois trocar por sensores (Eu acho que tem sensores para nutrientes)
+    float phAgua = 6.8;
+    int nutrientes = 450;
 
-    // Log no formato JSON (para monitoramento serial)
-    Serial.print("{");
-    Serial.print("\"temperatura_ar\":"); Serial.print(tmpAr); Serial.print(",");
-    Serial.print("\"temperatura_agua\":"); Serial.print(tempAgua); Serial.print(",");
-    Serial.print("\"luminosidade\":"); Serial.print(ilumi); Serial.print(",");
-    Serial.print("\"ventilador\":"); Serial.print(digitalRead(pinVent)); Serial.print(",");
-    Serial.print("\"led\":"); Serial.print(digitalRead(pinLed)); Serial.print(",");
-    Serial.print("\"bomba\":"); Serial.print(digitalRead(pinBomba));
-    Serial.println("}");
-  }
+    bool ventilador = tempAr > 28;
+    bool iluminacao = ilumi < 30;
+    bool bomba = true;
 
-  // Controle da bomba de irrigação a cada 10 minutos
-  if (agora - ultimoTempoIrrigacao >= intervaloIrrigacao) {
-    ligado = !ligado;
-    digitalWrite(pinBomba, ligado ? HIGH : LOW);
-    ultimoTempoIrrigacao = agora;
+    digitalWrite(VENT_PIN, ventilador ? HIGH : LOW);
+    digitalWrite(LED_PIN, iluminacao ? HIGH : LOW);
+    digitalWrite(BOMBA_PIN, bomba ? HIGH : LOW);
+
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin("http://localhost:8000/estufa");
+      http.addHeader("Content-Type", "application/json");
+
+      // Formato JSON
+      StaticJsonDocument<256> doc;
+      doc["estufa_id"] = "1";
+      doc["temperatura_ar"] = tempAr;
+      doc["umidade_ar"] = umidAr;
+      doc["temperatura_agua"] = tempAgua;
+      doc["luminosidade"] = ilumi;
+      doc["ph_agua"] = phAgua;
+      doc["nutrientes"] = nutrientes;
+      doc["ventilacao"] = ventilador;
+      doc["iluminacao"] = iluminacao;
+      doc["bomba_agua"] = bomba;
+
+      String jsonStr;
+      serializeJson(doc, jsonStr);
+
+      int httpCode = http.POST(jsonStr);
+      if (httpCode > 0) {
+        Serial.print("POST enviado. Código: ");
+        Serial.println(httpCode);
+        Serial.println(http.getString());
+      } else {
+        Serial.print("Erro no POST: ");
+        Serial.println(http.errorToString(httpCode));
+      }
+
+      http.end();
+    }
   }
 }

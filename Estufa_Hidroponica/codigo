@@ -20,8 +20,8 @@ DallasTemperature sensors(&oneWire);
 DeviceAddress sensorAgua;
 
 // Bagui do WIFI
-const char* ssid = "SUA_REDE_WIFI";
-const char* password = "SUA_SENHA";
+const char* ssid = "O nome do WIFI lá";
+const char* password = "A senha do bagui lá";
 
 // Intervalo
 unsigned long ultimoEnvio = 0;

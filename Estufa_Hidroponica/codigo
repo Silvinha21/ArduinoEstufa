@@ -148,11 +148,17 @@ void iniciarModoAP() {
 
 void atualizarEstado() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi desconectado.");
+    Serial.println("[WiFi] Desconectado.");
     falhas_consecutivas++;
-    if (falhas_consecutivas >= MAX_FALHAS) iniciarModoAP();
+    Serial.printf("[WiFi] Falhas consecutivas: %d\n", falhas_consecutivas);
+    if (falhas_consecutivas >= MAX_FALHAS) {
+      Serial.println("[WiFi] Número máximo de falhas atingido. Entrando em modo AP...");
+      iniciarModoAP();
+    }
     return;
   }
+
+  Serial.println("\n[Sensor] Lendo dados...");
 
   float temperatura_ar = dht.readTemperature();
   float umidade_ar = dht.readHumidity();
@@ -161,6 +167,7 @@ void atualizarEstado() {
   float temperatura_agua = sensors.getTempC(sensorAgua);
 
   int luminosidade = map(analogRead(LDR_PIN), 0, 4095, 0, 100);
+
   float phAgua = 6.7;
   int nutrientes = 480;
 
@@ -176,30 +183,59 @@ void atualizarEstado() {
   iluminacao_estado = iluminacao;
   bomba_estado = bomba;
 
-  HTTPClient http;
-  WiFiClient client;
+  Serial.println("[Sensor] Dados coletados:");
+  Serial.printf(" - Temp. Ar: %.2f °C\n", temperatura_ar);
+  Serial.printf(" - Umidade Ar: %.2f %%\n", umidade_ar);
+  Serial.printf(" - Temp. Água: %.2f °C\n", temperatura_agua);
+  Serial.printf(" - Luminosidade: %d %%\n", luminosidade);
+  Serial.printf(" - Ventilador: %s\n", ventilador ? "Ligado" : "Desligado");
+  Serial.printf(" - Iluminação: %s\n", iluminacao ? "Ligada" : "Desligada");
+  Serial.printf(" - Bomba: %s\n", bomba ? "Ligada" : "Desligada");
+
   String url = api_host + "/estufa";
-  http.begin(client, url);
-  http.addHeader("Content-Type", "application/json");
+  Serial.printf("\n[HTTP] Enviando POST para: %s\n", url.c_str());
 
   StaticJsonDocument<384> doc;
-  doc["estufa_id"] = estufa_id;
-  doc["temperatura_ar"] = temperatura_ar;
+  doc["estufa_id"]        = estufa_id;
+  doc["temperatura_ar"]   = temperatura_ar;
   doc["temperatura_agua"] = temperatura_agua;
-  doc["umidade_ar"] = umidade_ar;
-  doc["luminosidade"] = luminosidade;
-  doc["ph_agua"] = phAgua;
-  doc["nutrientes"] = nutrientes;
-  doc["ventilacao"] = ventilador;
-  doc["iluminacao"] = iluminacao;
-  doc["bomba_agua"] = bomba;
+  doc["umidade_ar"]       = umidade_ar;
+  doc["luminosidade"]     = luminosidade;
+  doc["ph_agua"]          = phAgua;
+  doc["nutrientes"]       = nutrientes;
+  doc["ventilacao"]       = ventilador;
+  doc["iluminacao"]       = iluminacao;
+  doc["bomba_agua"]       = bomba;
 
   String jsonStr;
   serializeJson(doc, jsonStr);
+  Serial.println("[HTTP] JSON enviado:");
+  Serial.println(jsonStr);
+
+  HTTPClient http;
+  WiFiClient client;
+  if (!http.begin(client, url)) {
+    Serial.println("[HTTP] Erro ao iniciar conexão HTTP.");
+    return;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
   int httpCode = http.POST(jsonStr);
-  Serial.printf("POST status: %d\n", httpCode);
+
+  if (httpCode > 0) {
+    Serial.printf("[HTTP] Resposta recebida. Código: %d\n", httpCode);
+    String payload = http.getString();
+    Serial.println("[HTTP] Corpo da resposta:");
+    Serial.println(payload);
+  } else {
+    Serial.printf("[HTTP] Erro no POST. Código: %d\n", httpCode);
+    Serial.println("[HTTP] Verifique se o endereço da API está correto e acessível.");
+  }
+
   http.end();
 }
+
 
 void setup() {
   Serial.begin(115200);

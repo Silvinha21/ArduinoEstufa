@@ -1,113 +1,235 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "DHT.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <EEPROM.h>
+#include <WebServer.h>
 
-// Pinos e Sensores
-#define DHTPIN D5
-#define DHTTYPE DHT11
-#define ONE_WIRE_BUS D6
-#define LDR_PIN A0
-#define LED_PIN D1
-#define BOMBA_PIN D2
-#define VENT_PIN D3
+#define AP_SSID         "ProjetoEstufa"
+#define AP_PASSWORD     "12345678"
+#define EEPROM_SIZE     256
+#define WIFI_TIMEOUT_MS 10000
+#define INTERVALO_LOOP  10000
+
+#define DHTPIN          18
+#define DHTTYPE         DHT11
+#define ONE_WIRE_BUS    19
+#define LDR_PIN         36  
+#define LED_PIN         23
+#define BOMBA_PIN       22
+#define VENT_PIN        21
+#define LED_BUILTIN     2
+
+bool ventilacao_estado = false;
+bool iluminacao_estado = false;
+bool bomba_estado      = false;
 
 DHT dht(DHTPIN, DHTTYPE);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress sensorAgua;
 
-// Bagui do WIFI
-const char* ssid = "O nome do WIFI lá";
-const char* password = "A senha do bagui lá";
+WebServer server(80);
 
-// Intervalo
-unsigned long ultimoEnvio = 0;
-const unsigned long intervalo = 10000; // 10s
+String ssid, password, api_host, estufa_id;
+int falhas_consecutivas = 0;
+const int MAX_FALHAS = 10;
 
-void setup() {
-  Serial.begin(9600);
-  dht.begin();
-  sensors.begin();
-  WiFi.begin(ssid, password);
+bool modoAP = false;
+unsigned long ultimoBlink = 0;
+bool ledEstado = LOW;
 
-  pinMode(LDR_PIN, INPUT);
+void inicializarRele() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(BOMBA_PIN, OUTPUT);
   pinMode(VENT_PIN, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
 
   digitalWrite(LED_PIN, LOW);
   digitalWrite(BOMBA_PIN, LOW);
   digitalWrite(VENT_PIN, LOW);
+  digitalWrite(LED_BUILTIN, LOW);
+}
 
-  while (WiFi.status() != WL_CONNECTED) {
+void salvarCredenciais() {
+  EEPROM.begin(EEPROM_SIZE);
+  for (int i = 0; i < EEPROM_SIZE; ++i) EEPROM.write(i, 0);
+  for (int i = 0; i < ssid.length(); ++i) EEPROM.write(i, ssid[i]);
+  for (int i = 0; i < password.length(); ++i) EEPROM.write(64 + i, password[i]);
+  for (int i = 0; i < api_host.length(); ++i) EEPROM.write(128 + i, api_host[i]);
+  for (int i = 0; i < estufa_id.length(); ++i) EEPROM.write(192 + i, estufa_id[i]);
+  EEPROM.commit();
+}
+
+bool carregarCredenciais() {
+  EEPROM.begin(EEPROM_SIZE);
+  char ssid_eep[64], pass_eep[64], api_eep[64], id_eep[64];
+  for (int i = 0; i < 63; ++i) ssid_eep[i] = EEPROM.read(i);
+  for (int i = 0; i < 63; ++i) pass_eep[i] = EEPROM.read(64 + i);
+  for (int i = 0; i < 63; ++i) api_eep[i] = EEPROM.read(128 + i);
+  for (int i = 0; i < 63; ++i) id_eep[i] = EEPROM.read(192 + i);
+  ssid_eep[63] = pass_eep[63] = api_eep[63] = id_eep[63] = 0;
+  ssid = String(ssid_eep);
+  password = String(pass_eep);
+  api_host = String(api_eep);
+  estufa_id = String(id_eep);
+  return ssid.length() > 0 && api_host.length() > 0 && estufa_id.length() > 0;
+}
+
+bool conectarWiFiSalvo() {
+  Serial.printf("Conectando em: %s\n", ssid.c_str());
+  WiFi.begin(ssid.c_str(), password.c_str());
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS) {
     delay(500);
     Serial.print(".");
   }
+  return WiFi.status() == WL_CONNECTED;
+}
 
-  Serial.println("Wi-Fi conectado!");
+void iniciarModoAP() {
+  modoAP = true;
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  Serial.print("AP ativo. Conecte-se a: ");
+  Serial.println(AP_SSID);
+  Serial.print("Acesse: http://");
+  Serial.println(WiFi.softAPIP());
+
+  server.on("/", []() {
+    String page =
+      "<!DOCTYPE html><html lang='pt-br'><head>"
+      "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+      "<meta charset='UTF-8'><title>Configuração Estufa</title>"
+      "<style>"
+      "body { font-family: Arial; background: #f4f4f4; }"
+      ".container { max-width: 400px; margin: 30px auto; background: #fff; padding: 20px; border-radius: 8px; }"
+      "h1 { text-align: center; color: #333; }"
+      "label { margin-top: 15px; display: block; }"
+      "input { width: 100%; padding: 8px; margin-top: 5px; }"
+      "</style></head><body>"
+      "<div class='container'>"
+      "<h1>Configuração da Estufa</h1>"
+      "<form action='/save' method='post'>"
+      "<label>SSID WiFi:</label><input name='ssid' type='text' value='" + ssid + "'>"
+      "<label>Senha WiFi:</label><input name='password' type='password' value='" + password + "'>"
+      "<label>API Host:</label><input name='api_host' type='text' value='" + api_host + "'>"
+      "<label>Estufa ID:</label><input name='estufa_id' type='text' value='" + estufa_id + "'>"
+      "<input type='submit' value='Salvar e Reiniciar'>"
+      "</form></div></body></html>";
+    server.send(200, "text/html", page);
+  });
+
+  server.on("/save", HTTP_POST, []() {
+    ssid = server.arg("ssid");
+    password = server.arg("password");
+    api_host = server.arg("api_host");
+    estufa_id = server.arg("estufa_id");
+    salvarCredenciais();
+    server.send(200, "text/html", "<h1>Salvo! Reiniciando...</h1>");
+    delay(2000);
+    ESP.restart();
+  });
+
+  server.begin();
+  while (true) {
+    unsigned long agora = millis();
+    if (agora - ultimoBlink >= 500) {
+      ultimoBlink = agora;
+      ledEstado = !ledEstado;
+      digitalWrite(LED_BUILTIN, ledEstado ? LOW : HIGH);
+    }
+    server.handleClient();
+    delay(10);
+  }
+}
+
+void atualizarEstado() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi desconectado.");
+    falhas_consecutivas++;
+    if (falhas_consecutivas >= MAX_FALHAS) iniciarModoAP();
+    return;
+  }
+
+  float temperatura_ar = dht.readTemperature();
+  float umidade_ar = dht.readHumidity();
+
+  sensors.requestTemperatures();
+  float temperatura_agua = sensors.getTempC(sensorAgua);
+
+  int luminosidade = map(analogRead(LDR_PIN), 0, 4095, 0, 100);
+  float phAgua = 6.7;
+  int nutrientes = 480;
+
+  bool ventilador = temperatura_ar > 28;
+  bool iluminacao = luminosidade < 30;
+  bool bomba = true;
+
+  digitalWrite(VENT_PIN, ventilador ? HIGH : LOW);
+  digitalWrite(LED_PIN, iluminacao ? HIGH : LOW);
+  digitalWrite(BOMBA_PIN, bomba ? HIGH : LOW);
+
+  ventilacao_estado = ventilador;
+  iluminacao_estado = iluminacao;
+  bomba_estado = bomba;
+
+  HTTPClient http;
+  WiFiClient client;
+  String url = api_host + "/estufa";
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<384> doc;
+  doc["estufa_id"] = estufa_id;
+  doc["temperatura_ar"] = temperatura_ar;
+  doc["temperatura_agua"] = temperatura_agua;
+  doc["umidade_ar"] = umidade_ar;
+  doc["luminosidade"] = luminosidade;
+  doc["ph_agua"] = phAgua;
+  doc["nutrientes"] = nutrientes;
+  doc["ventilacao"] = ventilador;
+  doc["iluminacao"] = iluminacao;
+  doc["bomba_agua"] = bomba;
+
+  String jsonStr;
+  serializeJson(doc, jsonStr);
+  int httpCode = http.POST(jsonStr);
+  Serial.printf("POST status: %d\n", httpCode);
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  sensors.begin();
+  pinMode(LDR_PIN, INPUT);
+  inicializarRele();
+
   if (!sensors.getAddress(sensorAgua, 0)) {
     Serial.println("Sensor de temperatura da água não encontrado!");
+  }
+
+  if (!carregarCredenciais() || !conectarWiFiSalvo()) {
+    iniciarModoAP();
   }
 }
 
 void loop() {
-  unsigned long agora = millis();
-  if (agora - ultimoEnvio >= intervalo) {
-    ultimoEnvio = agora;
-
-    float tempAr = dht.readTemperature();
-    float umidAr = dht.readHumidity();
-    sensors.requestTemperatures();
-    float tempAgua = sensors.getTempC(sensorAgua);
-    int ilumi = map(analogRead(LDR_PIN), 0, 1023, 0, 100);
-
-    // Simulações (pH, nutrientes) — Depois trocar por sensores (Eu acho que tem sensores para nutrientes)
-    float phAgua = 6.8;
-    int nutrientes = 450;
-
-    bool ventilador = tempAr > 28;
-    bool iluminacao = ilumi < 30;
-    bool bomba = true;
-
-    digitalWrite(VENT_PIN, ventilador ? HIGH : LOW);
-    digitalWrite(LED_PIN, iluminacao ? HIGH : LOW);
-    digitalWrite(BOMBA_PIN, bomba ? HIGH : LOW);
-
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      http.begin("http://localhost:8000/estufa");
-      http.addHeader("Content-Type", "application/json");
-
-      // Formato JSON
-      StaticJsonDocument<256> doc;
-      doc["estufa_id"] = "1";
-      doc["temperatura_ar"] = tempAr;
-      doc["umidade_ar"] = umidAr;
-      doc["temperatura_agua"] = tempAgua;
-      doc["luminosidade"] = ilumi;
-      doc["ph_agua"] = phAgua;
-      doc["nutrientes"] = nutrientes;
-      doc["ventilacao"] = ventilador;
-      doc["iluminacao"] = iluminacao;
-      doc["bomba_agua"] = bomba;
-
-      String jsonStr;
-      serializeJson(doc, jsonStr);
-
-      int httpCode = http.POST(jsonStr);
-      if (httpCode > 0) {
-        Serial.print("POST enviado. Código: ");
-        Serial.println(httpCode);
-        Serial.println(http.getString());
-      } else {
-        Serial.print("Erro no POST: ");
-        Serial.println(http.errorToString(httpCode));
-      }
-
-      http.end();
+  if (modoAP) {
+    unsigned long agora = millis();
+    if (agora - ultimoBlink >= 500) {
+      ultimoBlink = agora;
+      ledEstado = !ledEstado;
+      digitalWrite(LED_BUILTIN, ledEstado ? LOW : HIGH);
     }
+    server.handleClient();
+    delay(10);
+  } else {
+    digitalWrite(LED_BUILTIN, HIGH);
+    atualizarEstado();
+    delay(INTERVALO_LOOP);
   }
 }
